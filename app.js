@@ -2,12 +2,18 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
+const path = require('path');
+const multer = require('multer');
 const db = require('./utils/database');
 const { validarUsuario, validarProducto } = require('./utils/validation');
 const { authenticateToken } = require('./middlewares/auth');
+const upload = require('./config/upload');
 
 const app = express();
 app.use(express.json());
+
+// Servir archivos estáticos desde el directorio uploads
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Middleware de logging
 app.use((req, res, next) => {
@@ -358,7 +364,7 @@ app.get('/productos', authenticateToken, async (req, res) => {
     const { categoria, precio_min, precio_max, stock_min, pagina = 1, limite = 10 } = req.query;
 
     let sql = `
-      SELECT p.id, p.nombre, p.precio, p.stock, p.activo,
+      SELECT p.id, p.nombre, p.precio, p.stock, p.activo, p.imagen,
              c.nombre AS categoria
       FROM productos p
       LEFT JOIN categorias c ON p.categoria_id = c.id
@@ -393,8 +399,16 @@ app.get('/productos', authenticateToken, async (req, res) => {
 
     const productos = await db.query(sql, params);
 
+    // Construir URLs completas para las imágenes
+    const productosConImagen = productos.map(producto => {
+      if (producto.imagen) {
+        producto.imagen = `${req.protocol}://${req.get('host')}/${producto.imagen}`;
+      }
+      return producto;
+    });
+
     res.json({
-      productos,
+      productos: productosConImagen,
       pagina: parseInt(pagina),
       limite: parseInt(limite)
     });
@@ -405,11 +419,17 @@ app.get('/productos', authenticateToken, async (req, res) => {
   }
 });
 
-// POST /productos - Crear producto (NO protegida)
-app.post('/productos', async (req, res) => {
+// POST /productos - Crear producto con imagen (NO protegida)
+app.post('/productos', upload.single('imagen'), async (req, res) => {
   try {
+    // Validar datos del producto (excepto imagen que viene en req.file)
     const errores = validarProducto(req.body);
     if (errores.length > 0) {
+      // Si hay un archivo subido pero hay errores de validación, eliminarlo
+      if (req.file) {
+        const fs = require('fs');
+        fs.unlinkSync(req.file.path);
+      }
       return res.status(400).json({
         error: 'Datos inválidos',
         detalles: errores
@@ -418,10 +438,23 @@ app.post('/productos', async (req, res) => {
 
     const { nombre, precio, descripcion, stock, categoria_id } = req.body;
 
+    // Obtener la ruta de la imagen si se subió una
+    let imagenPath = null;
+    if (req.file) {
+      // Guardar la ruta relativa para acceso desde la API
+      imagenPath = `uploads/${req.file.filename}`;
+    }
+
     const resultado = await db.execute(
-      'INSERT INTO productos (nombre, descripcion, precio, stock, categoria_id, activo, fecha_creacion) VALUES (?, ?, ?, ?, ?, true, NOW())',
-      [nombre, descripcion || null, precio, stock || 0, categoria_id || null]
+      'INSERT INTO productos (nombre, descripcion, precio, stock, categoria_id, imagen, activo, fecha_creacion) VALUES (?, ?, ?, ?, ?, ?, true, NOW())',
+      [nombre, descripcion || null, precio, stock || 0, categoria_id || null, imagenPath]
     );
+
+    // Construir URL completa de la imagen si existe
+    let imagenUrl = null;
+    if (imagenPath) {
+      imagenUrl = `${req.protocol}://${req.get('host')}/${imagenPath}`;
+    }
 
     res.status(201).json({
       mensaje: 'Producto creado exitosamente',
@@ -430,12 +463,171 @@ app.post('/productos', async (req, res) => {
         nombre,
         precio,
         stock: stock || 0,
-        categoria_id
+        categoria_id,
+        imagen: imagenUrl
       }
     });
 
   } catch (error) {
     console.error('Error creando producto:', error);
+    
+    // Si hay un error y se subió un archivo, eliminarlo
+    if (req.file) {
+      const fs = require('fs');
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (unlinkError) {
+        console.error('Error eliminando archivo:', unlinkError);
+      }
+    }
+
+    // Manejar errores específicos de multer
+    if (error instanceof multer.MulterError) {
+      if (error.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          error: 'Archivo muy grande',
+          mensaje: 'El tamaño máximo permitido es 5MB'
+        });
+      }
+      return res.status(400).json({
+        error: 'Error al subir archivo',
+        mensaje: error.message
+      });
+    }
+
+    // Manejar errores de validación de tipo de archivo
+    if (error.message && error.message.includes('Tipo de archivo no permitido')) {
+      return res.status(400).json({
+        error: 'Tipo de archivo inválido',
+        mensaje: error.message
+      });
+    }
+
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// PUT /productos/:id - Actualizar producto con imagen (NO protegida)
+app.put('/productos/:id', upload.single('imagen'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const errores = validarProducto(req.body);
+
+    if (errores.length > 0) {
+      // Si hay un archivo subido pero hay errores de validación, eliminarlo
+      if (req.file) {
+        const fs = require('fs');
+        fs.unlinkSync(req.file.path);
+      }
+      return res.status(400).json({
+        error: 'Datos inválidos',
+        detalles: errores
+      });
+    }
+
+    // Verificar que el producto existe
+    const productosExistentes = await db.query(
+      'SELECT id, imagen FROM productos WHERE id = ?',
+      [id]
+    );
+
+    if (productosExistentes.length === 0) {
+      // Si hay un archivo subido pero el producto no existe, eliminarlo
+      if (req.file) {
+        const fs = require('fs');
+        fs.unlinkSync(req.file.path);
+      }
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+
+    const productoExistente = productosExistentes[0];
+    const { nombre, precio, descripcion, stock, categoria_id } = req.body;
+
+    let imagenPath = productoExistente.imagen; // Mantener la imagen actual por defecto
+
+    // Si se subió una nueva imagen
+    if (req.file) {
+      // Eliminar la imagen anterior si existe
+      if (productoExistente.imagen) {
+        const fs = require('fs');
+        const path = require('path');
+        const imagenAnteriorPath = path.join(__dirname, productoExistente.imagen);
+        try {
+          if (fs.existsSync(imagenAnteriorPath)) {
+            fs.unlinkSync(imagenAnteriorPath);
+          }
+        } catch (error) {
+          console.error('Error eliminando imagen anterior:', error);
+          // Continuar aunque falle la eliminación
+        }
+      }
+      // Guardar la nueva ruta de imagen
+      imagenPath = `uploads/${req.file.filename}`;
+    }
+
+    // Actualizar el producto
+    const resultado = await db.execute(
+      'UPDATE productos SET nombre = ?, descripcion = ?, precio = ?, stock = ?, categoria_id = ?, imagen = ?, fecha_actualizacion = NOW() WHERE id = ?',
+      [nombre, descripcion || null, precio, stock || 0, categoria_id || null, imagenPath, id]
+    );
+
+    if (resultado.affectedRows === 0) {
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+
+    // Construir URL completa de la imagen si existe
+    let imagenUrl = null;
+    if (imagenPath) {
+      imagenUrl = `${req.protocol}://${req.get('host')}/${imagenPath}`;
+    }
+
+    res.json({
+      mensaje: 'Producto actualizado exitosamente',
+      producto: {
+        id: parseInt(id),
+        nombre,
+        precio,
+        stock: stock || 0,
+        categoria_id,
+        imagen: imagenUrl
+      }
+    });
+
+  } catch (error) {
+    console.error('Error actualizando producto:', error);
+
+    // Si hay un archivo subido pero hay un error, eliminarlo
+    if (req.file) {
+      const fs = require('fs');
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (unlinkError) {
+        console.error('Error eliminando archivo:', unlinkError);
+      }
+    }
+
+    // Manejar errores específicos de multer
+    if (error instanceof multer.MulterError) {
+      if (error.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          error: 'Archivo muy grande',
+          mensaje: 'El tamaño máximo permitido es 5MB'
+        });
+      }
+      return res.status(400).json({
+        error: 'Error al subir archivo',
+        mensaje: error.message
+      });
+    }
+
+    // Manejar errores de validación de tipo de archivo
+    if (error.message && error.message.includes('Tipo de archivo no permitido')) {
+      return res.status(400).json({
+        error: 'Tipo de archivo inválido',
+        mensaje: error.message
+      });
+    }
+
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });

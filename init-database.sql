@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS productos (
   id INT PRIMARY KEY AUTO_INCREMENT,
   nombre VARCHAR(200) NOT NULL,
   descripcion TEXT,
+  imagen VARCHAR(255) NULL,
   precio DECIMAL(10,2) NOT NULL,
   stock INT DEFAULT 0,
   categoria_id INT,
