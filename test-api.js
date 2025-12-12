@@ -65,6 +65,7 @@ async function probarAPI() {
     console.log('\n🎉 Todas las pruebas pasaron exitosamente!');
 
   } catch (error) {
+    console.log(error);
     console.error('❌ Error en las pruebas:', error.response?.data || error.message);
   }
 }
