@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const mysql = require('mysql2/promise');
+require('dotenv').config();
 
 async function inicializarBaseDatos() {
   let connection;
@@ -21,14 +22,13 @@ async function inicializarBaseDatos() {
     const sqlPath = path.join(__dirname, 'init-database.sql');
     const sql = fs.readFileSync(sqlPath, 'utf8');
 
-    // Ejecutar SQL
-    await connection.execute(sql);
+    // Ejecutar SQL (usar query en lugar de execute para múltiples statements)
+    await connection.query(sql);
 
     console.log('✅ Base de datos inicializada correctamente');
 
-    // Verificar datos
-    await connection.execute('USE ttops_node_db');
-
+    // Verificar datos (USE debe usar query, no execute)
+    await connection.query('USE ttops_node_db');
     const [usuarios] = await connection.execute('SELECT COUNT(*) AS total FROM usuarios');
     const [productos] = await connection.execute('SELECT COUNT(*) AS total FROM productos');
     const [categorias] = await connection.execute('SELECT COUNT(*) AS total FROM categorias');
