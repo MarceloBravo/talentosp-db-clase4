@@ -107,7 +107,7 @@ app.post('/auth/login', async (req, res) => {
 
 // RUTAS DE USUARIOS
 
-// GET /usuarios - Listar usuarios
+// GET /usuarios - Listar usuarios (NO protegida)
 app.get('/usuarios', async (req, res) => {
   try {
     const { pagina = 1, limite = 10, activo } = req.query;
@@ -218,7 +218,7 @@ app.put('/auth/change-password', authenticateToken, async (req, res) => {
   }
 });
 
-// GET /usuarios/:id - Obtener usuario específico
+// GET /usuarios/:id - Obtener usuario específico (protegida)
 app.get('/usuarios/:id', authenticateToken, async (req, res) => {
   try {
 
@@ -405,8 +405,8 @@ app.get('/productos', authenticateToken, async (req, res) => {
   }
 });
 
-// POST /productos - Crear producto (protegida)
-app.post('/productos', authenticateToken, async (req, res) => {
+// POST /productos - Crear producto (NO protegida)
+app.post('/productos', async (req, res) => {
   try {
     const errores = validarProducto(req.body);
     if (errores.length > 0) {
