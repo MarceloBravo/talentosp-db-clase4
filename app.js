@@ -8,6 +8,7 @@ const db = require('./utils/database');
 const { validarUsuario, validarProducto, validarResena, validarPedido } = require('./utils/validation');
 const { enviarEmailPedido } = require('./utils/email');
 const { authenticateToken } = require('./middlewares/auth');
+const { cacheMiddleware, invalidarCacheProductos, invalidarCacheResenas, invalidarCacheEstadisticas } = require('./middlewares/cache');
 const upload = require('./config/upload');
 
 const app = express();
@@ -359,8 +360,8 @@ app.delete('/usuarios/:id', authenticateToken, async (req, res) => {
 
 // RUTAS DE PRODUCTOS
 
-// GET /productos - Listar productos con filtros (protegida)
-app.get('/productos', authenticateToken, async (req, res) => {
+// GET /productos - Listar productos con filtros (protegida, con caché)
+app.get('/productos', authenticateToken, cacheMiddleware(300), async (req, res) => {
   try {
     const { categoria, precio_min, precio_max, stock_min, pagina = 1, limite = 10 } = req.query;
 
@@ -456,6 +457,10 @@ app.post('/productos', upload.single('imagen'), async (req, res) => {
     if (imagenPath) {
       imagenUrl = `${req.protocol}://${req.get('host')}/${imagenPath}`;
     }
+
+    // Invalidar caché de productos y estadísticas
+    await invalidarCacheProductos();
+    await invalidarCacheEstadisticas();
 
     res.status(201).json({
       mensaje: 'Producto creado exitosamente',
@@ -576,6 +581,10 @@ app.put('/productos/:id', upload.single('imagen'), async (req, res) => {
       return res.status(404).json({ error: 'Producto no encontrado' });
     }
 
+    // Invalidar caché de productos y estadísticas
+    await invalidarCacheProductos();
+    await invalidarCacheEstadisticas();
+
     // Construir URL completa de la imagen si existe
     let imagenUrl = null;
     if (imagenPath) {
@@ -681,6 +690,9 @@ app.post('/reseñas', authenticateToken, async (req, res) => {
       [producto_id, usuario_id, calificacion, comentario || null]
     );
 
+    // Invalidar caché de reseñas
+    await invalidarCacheResenas();
+
     // Obtener la reseña creada con información del usuario
     const resenas = await db.query(
       `SELECT r.id, r.producto_id, r.usuario_id, r.calificacion, r.comentario, r.fecha_creacion,
@@ -712,8 +724,8 @@ app.post('/reseñas', authenticateToken, async (req, res) => {
   }
 });
 
-// GET /reseñas - Listar reseñas (pública, sin autenticación)
-app.get('/reseñas', async (req, res) => {
+// GET /reseñas - Listar reseñas (pública, sin autenticación, con caché)
+app.get('/reseñas', cacheMiddleware(180), async (req, res) => {
   try {
     const { producto_id, usuario_id, pagina = 1, limite = 10, orden = 'fecha_creacion' } = req.query;
 
@@ -902,6 +914,9 @@ app.post('/pedidos', authenticateToken, async (req, res) => {
       };
     });
 
+    // Invalidar caché de estadísticas (los pedidos afectan las estadísticas)
+    await invalidarCacheEstadisticas();
+
     // Enviar email de confirmación (no bloquea la respuesta si falla)
     enviarEmailPedido(usuario, resultado.pedido, resultado.detalles)
       .then(emailResult => {
@@ -1049,8 +1064,8 @@ app.get('/pedidos/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// RUTA DE ESTADÍSTICAS (protegida)
-app.get('/estadisticas', authenticateToken, async (req, res) => {
+// RUTA DE ESTADÍSTICAS (protegida, con caché)
+app.get('/estadisticas', authenticateToken, cacheMiddleware(600), async (req, res) => {
   try {
     // Estadísticas usando transacción para consistencia
     const resultado = await db.transaction(async (connection) => {

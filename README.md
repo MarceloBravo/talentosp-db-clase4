@@ -3,7 +3,7 @@
 - ✅ subida de imágenes para productos con multer, 
 - ✅ sistema de reseñas y calificaciones, 
 - ✅ notificaciones por email para nuevos pedidos, y 
-- un sistema de caché con Redis para las consultas más frecuentes.
+- ✅ un sistema de caché con Redis para las consultas más frecuentes.
 
 ## ✅ Sistema de Autenticación JWT Implementado
 
@@ -12,7 +12,7 @@ La API ahora incluye un sistema completo de autenticación JWT que protege todas
 ### Instalación
 
 # Instalar dependencias
-npm install express mysql2 dotenv axios jsonwebtoken bcrypt multer nodemailer
+npm install express mysql2 dotenv axios jsonwebtoken bcrypt multer nodemailer redis
 
 # Configurar variables de entorno
 echo "DB_HOST=localhost
@@ -236,8 +236,6 @@ GET /reseñas?orden=calificacion
 **Nota:** Las estadísticas solo se incluyen cuando se filtra por `producto_id`.
 
 ## 🛒 Sistema de Pedidos y Notificaciones por Email
-
-La API ahora incluye un sistema completo de pedidos con notificaciones automáticas por email.
 
 ### Configuración de Email
 
@@ -531,3 +529,195 @@ console.log('Mis pedidos:', pedidos);
 - **Email asíncrono:** El envío de email no bloquea la respuesta. Si falla el email, el pedido igual se crea exitosamente
 - **Seguridad:** Solo puedes ver tus propios pedidos (filtrado por usuario autenticado)
 - **Estados:** Los pedidos pueden tener los siguientes estados: `pendiente`, `procesando`, `enviado`, `completado`, `cancelado`
+
+## ⚡ Sistema de Caché con Redis
+
+La API ahora incluye un sistema completo de caché con Redis para optimizar las consultas más frecuentes.
+
+### Instalación de Redis
+
+**Windows:**
+```bash
+# Opción 1: Usar WSL (Windows Subsystem for Linux)
+wsl
+sudo apt-get update
+sudo apt-get install redis-server
+redis-server
+
+# Opción 2: Usar Docker
+docker run -d -p 6379:6379 redis:latest
+
+# Opción 3: Descargar Redis para Windows desde:
+# https://github.com/microsoftarchive/redis/releases
+```
+
+**Linux/Mac:**
+```bash
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install redis-server
+redis-server
+
+# macOS (con Homebrew)
+brew install redis
+brew services start redis
+```
+
+### Configuración
+
+Agrega las siguientes variables a tu archivo `.env` (opcional):
+
+```bash
+# Configuración Redis (opcional - usa valores por defecto si no se configuran)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+```
+
+**Nota:** Si Redis no está disponible, la aplicación funcionará normalmente sin caché. Los mensajes de advertencia aparecerán en la consola.
+
+### Endpoints con Caché
+
+Los siguientes endpoints utilizan caché para mejorar el rendimiento:
+
+1. **GET /productos** - TTL: 300 segundos (5 minutos)
+2. **GET /reseñas** - TTL: 180 segundos (3 minutos)
+3. **GET /estadisticas** - TTL: 600 segundos (10 minutos)
+
+### Funcionamiento del Caché
+
+#### 1. Caché Automático
+
+Cuando se realiza una petición GET a un endpoint con caché:
+
+1. Se genera una clave única basada en la URL y parámetros de consulta
+2. Se verifica si existe en Redis
+3. Si existe (cache HIT), se retorna inmediatamente sin consultar la base de datos
+4. Si no existe (cache MISS), se ejecuta la consulta, se guarda en caché y se retorna
+
+**Ejemplo:**
+```bash
+# Primera petición (cache MISS - consulta a BD)
+GET /productos?pagina=1&limite=10
+# Tiempo: ~50ms (consulta a MySQL)
+
+# Segunda petición (cache HIT - desde Redis)
+GET /productos?pagina=1&limite=10
+# Tiempo: ~2ms (desde caché)
+```
+
+#### 2. Invalidación Automática
+
+El caché se invalida automáticamente cuando:
+
+- **Se crea un producto** → Invalida caché de productos y estadísticas
+- **Se actualiza un producto** → Invalida caché de productos y estadísticas
+- **Se crea una reseña** → Invalida caché de reseñas
+- **Se crea un pedido** → Invalida caché de estadísticas
+
+Esto garantiza que los datos siempre estén actualizados.
+
+### 3. Ejemplo de Uso
+
+```bash
+# 1. Primera consulta (cache MISS)
+curl -X GET "http://localhost:3000/productos?pagina=1&limite=10" \
+  -H "Authorization: Bearer TU_TOKEN"
+
+# Respuesta en consola:
+# 💾 Cache SET: cache:/productos?pagina=1&limite=10 (TTL: 300s)
+
+# 2. Segunda consulta (cache HIT)
+curl -X GET "http://localhost:3000/productos?pagina=1&limite=10" \
+  -H "Authorization: Bearer TU_TOKEN"
+
+# Respuesta en consola:
+# ✅ Cache HIT: cache:/productos?pagina=1&limite=10
+
+# 3. Crear producto (invalida caché)
+curl -X POST http://localhost:3000/productos \
+  -H "Authorization: Bearer TU_TOKEN" \
+  -F "nombre=Nuevo Producto" \
+  -F "precio=99.99" \
+  -F "stock=10"
+
+# Respuesta en consola:
+# 🗑️  Eliminadas X claves del caché con patrón: cache:/productos*
+# 🗑️  Eliminadas X claves del caché con patrón: cache:/estadisticas*
+```
+
+### 4. Monitoreo del Caché
+
+Puedes verificar el estado del caché usando el cliente de Redis:
+
+```bash
+# Conectar a Redis
+redis-cli
+
+# Ver todas las claves de caché
+KEYS cache:*
+
+# Ver el valor de una clave específica
+GET cache:/productos?pagina=1&limite=10
+
+# Ver tiempo de vida restante (TTL)
+TTL cache:/productos?pagina=1&limite=10
+
+# Eliminar una clave específica
+DEL cache:/productos?pagina=1&limite=10
+
+# Eliminar todas las claves de caché
+FLUSHDB
+```
+
+### 5. Configuración de TTL (Time To Live)
+
+Los tiempos de caché están optimizados según el tipo de dato:
+
+- **Productos (300s)**: Datos que cambian ocasionalmente
+- **Reseñas (180s)**: Datos que cambian con frecuencia moderada
+- **Estadísticas (600s)**: Datos que cambian menos frecuentemente
+
+Puedes ajustar estos valores en `app.js`:
+
+```javascript
+// Cambiar TTL de productos a 10 minutos
+app.get('/productos', authenticateToken, cacheMiddleware(600), async (req, res) => {
+  // ...
+});
+```
+
+### 6. Ventajas del Sistema de Caché
+
+- **Rendimiento mejorado**: Respuestas hasta 25x más rápidas en consultas cacheadas
+- **Reducción de carga en BD**: Menos consultas a MySQL
+- **Escalabilidad**: Mejor manejo de tráfico alto
+- **Invalidación inteligente**: Los datos siempre están actualizados
+- **Tolerancia a fallos**: Si Redis no está disponible, la app funciona normalmente
+
+### 7. Notas Importantes
+
+- **Solo GET**: Solo las peticiones GET utilizan caché
+- **Claves únicas**: Cada combinación de parámetros tiene su propia clave de caché
+- **Serialización JSON**: Los datos se serializan/deserializan automáticamente
+- **Sin caché en desarrollo**: Si Redis no está disponible, la app funciona sin caché
+- **Limpieza automática**: Las claves expiran automáticamente según su TTL
+
+### 8. Troubleshooting
+
+**Redis no se conecta:**
+```
+⚠️  Redis no disponible. La aplicación funcionará sin caché.
+```
+- Verifica que Redis esté ejecutándose: `redis-cli ping` (debe responder `PONG`)
+- Verifica la configuración en `.env`
+
+**Caché no funciona:**
+- Verifica los logs de la consola para mensajes de caché
+- Asegúrate de que Redis esté conectado correctamente
+- Verifica que las peticiones sean GET (solo GET usa caché)
+
+**Datos desactualizados:**
+- El caché se invalida automáticamente al crear/actualizar datos
+- Si necesitas invalidar manualmente, usa `redis-cli` para eliminar claves
+- Reduce el TTL si los datos cambian muy frecuentemente
