@@ -68,6 +68,26 @@ CREATE TABLE IF NOT EXISTS detalle_pedidos (
   INDEX idx_producto (producto_id)
 );
 
+
+CREATE TABLE IF NOT EXISTS resenas (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  producto_id INT NOT NULL,
+  usuario_id INT NOT NULL,
+  calificacion INT NOT NULL CHECK (calificacion >= 1 AND calificacion <= 5),
+  comentario TEXT,
+  fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (producto_id) REFERENCES productos(id) ON DELETE CASCADE,
+  FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+  INDEX idx_producto (producto_id),
+  INDEX idx_usuario (usuario_id),
+  INDEX idx_calificacion (calificacion),
+  INDEX idx_fecha (fecha_creacion),
+  -- Evitar que un usuario califique el mismo producto múltiples veces
+  UNIQUE KEY unique_usuario_producto (usuario_id, producto_id)
+);
+
+
 -- Datos de ejemplo
 INSERT IGNORE INTO categorias (nombre, descripcion) VALUES
 ('Electrónica', 'Productos electrónicos y gadgets'),

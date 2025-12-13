@@ -5,7 +5,7 @@ const bcrypt = require('bcrypt');
 const path = require('path');
 const multer = require('multer');
 const db = require('./utils/database');
-const { validarUsuario, validarProducto } = require('./utils/validation');
+const { validarUsuario, validarProducto, validarResena } = require('./utils/validation');
 const { authenticateToken } = require('./middlewares/auth');
 const upload = require('./config/upload');
 
@@ -628,6 +628,169 @@ app.put('/productos/:id', upload.single('imagen'), async (req, res) => {
       });
     }
 
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// RUTAS DE RESEÑAS Y CALIFICACIONES
+
+// POST /reseñas - Crear reseña y calificación (protegida)
+app.post('/reseñas', authenticateToken, async (req, res) => {
+  try {
+    const errores = validarResena(req.body);
+    if (errores.length > 0) {
+      return res.status(400).json({
+        error: 'Datos inválidos',
+        detalles: errores
+      });
+    }
+
+    const { producto_id, calificacion, comentario } = req.body;
+    const usuario_id = req.user.id; // Obtener el ID del usuario autenticado
+
+    // Verificar que el producto existe
+    const productos = await db.query(
+      'SELECT id, nombre FROM productos WHERE id = ? AND activo = true',
+      [producto_id]
+    );
+
+    if (productos.length === 0) {
+      return res.status(404).json({
+        error: 'Producto no encontrado',
+        mensaje: 'El producto especificado no existe o está inactivo'
+      });
+    }
+
+    // Verificar si el usuario ya calificó este producto
+    const resenasExistentes = await db.query(
+      'SELECT id FROM resenas WHERE usuario_id = ? AND producto_id = ?',
+      [usuario_id, producto_id]
+    );
+
+    if (resenasExistentes.length > 0) {
+      return res.status(409).json({
+        error: 'Ya has calificado este producto',
+        mensaje: 'Solo puedes calificar un producto una vez. Puedes actualizar tu reseña existente.'
+      });
+    }
+
+    // Crear la reseña
+    const resultado = await db.execute(
+      'INSERT INTO resenas (producto_id, usuario_id, calificacion, comentario, fecha_creacion) VALUES (?, ?, ?, ?, NOW())',
+      [producto_id, usuario_id, calificacion, comentario || null]
+    );
+
+    // Obtener la reseña creada con información del usuario
+    const resenas = await db.query(
+      `SELECT r.id, r.producto_id, r.usuario_id, r.calificacion, r.comentario, r.fecha_creacion,
+              u.nombre AS usuario_nombre, u.email AS usuario_email,
+              p.nombre AS producto_nombre
+       FROM resenas r
+       INNER JOIN usuarios u ON r.usuario_id = u.id
+       INNER JOIN productos p ON r.producto_id = p.id
+       WHERE r.id = ?`,
+      [resultado.insertId]
+    );
+
+    res.status(201).json({
+      mensaje: 'Reseña creada exitosamente',
+      resena: resenas[0]
+    });
+
+  } catch (error) {
+    console.error('Error creando reseña:', error);
+    
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        error: 'Ya has calificado este producto',
+        mensaje: 'Solo puedes calificar un producto una vez'
+      });
+    }
+
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// GET /reseñas - Listar reseñas (pública, sin autenticación)
+app.get('/reseñas', async (req, res) => {
+  try {
+    const { producto_id, usuario_id, pagina = 1, limite = 10, orden = 'fecha_creacion' } = req.query;
+
+    let sql = `
+      SELECT r.id, r.producto_id, r.usuario_id, r.calificacion, r.comentario, r.fecha_creacion,
+             u.nombre AS usuario_nombre, u.email AS usuario_email,
+             p.nombre AS producto_nombre, p.precio AS producto_precio
+      FROM resenas r
+      INNER JOIN usuarios u ON r.usuario_id = u.id
+      INNER JOIN productos p ON r.producto_id = p.id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (producto_id) {
+      sql += ' AND r.producto_id = ?';
+      params.push(parseInt(producto_id));
+    }
+
+    if (usuario_id) {
+      sql += ' AND r.usuario_id = ?';
+      params.push(parseInt(usuario_id));
+    }
+
+    // Validar y aplicar ordenamiento
+    const ordenValido = ['fecha_creacion', 'calificacion', 'id'].includes(orden) ? orden : 'fecha_creacion';
+    const direccion = orden === 'calificacion' ? 'DESC' : 'DESC';
+    sql += ` ORDER BY r.${ordenValido} ${direccion}`;
+
+    // Aplicar paginación
+    const limiteInt = Math.max(1, parseInt(limite) || 10);
+    const offsetInt = Math.max(0, ((parseInt(pagina) || 1) - 1) * limiteInt);
+    sql += ` LIMIT ${limiteInt} OFFSET ${offsetInt}`;
+
+    const resenas = await db.query(sql, params);
+
+    // Obtener estadísticas de calificaciones si se filtra por producto
+    let estadisticas = null;
+    if (producto_id) {
+      const stats = await db.query(
+        `SELECT 
+          COUNT(*) AS total_resenas,
+          AVG(calificacion) AS calificacion_promedio,
+          SUM(CASE WHEN calificacion = 5 THEN 1 ELSE 0 END) AS cinco_estrellas,
+          SUM(CASE WHEN calificacion = 4 THEN 1 ELSE 0 END) AS cuatro_estrellas,
+          SUM(CASE WHEN calificacion = 3 THEN 1 ELSE 0 END) AS tres_estrellas,
+          SUM(CASE WHEN calificacion = 2 THEN 1 ELSE 0 END) AS dos_estrellas,
+          SUM(CASE WHEN calificacion = 1 THEN 1 ELSE 0 END) AS una_estrella
+         FROM resenas
+         WHERE producto_id = ?`,
+        [producto_id]
+      );
+      
+      if (stats.length > 0) {
+        estadisticas = {
+          total_resenas: stats[0].total_resenas,
+          calificacion_promedio: parseFloat(stats[0].calificacion_promedio || 0).toFixed(2),
+          distribucion: {
+            cinco_estrellas: stats[0].cinco_estrellas,
+            cuatro_estrellas: stats[0].cuatro_estrellas,
+            tres_estrellas: stats[0].tres_estrellas,
+            dos_estrellas: stats[0].dos_estrellas,
+            una_estrella: stats[0].una_estrella
+          }
+        };
+      }
+    }
+
+    res.json({
+      resenas,
+      estadisticas,
+      pagina: parseInt(pagina),
+      limite: parseInt(limite),
+      total: resenas.length
+    });
+
+  } catch (error) {
+    console.error('Error obteniendo reseñas:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });

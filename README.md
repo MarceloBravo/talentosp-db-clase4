@@ -1,7 +1,7 @@
 ### Ejercicio: Extiende la API agregando: 
 - ✅ sistema de autenticación JWT completo, 
 - ✅ subida de imágenes para productos con multer, 
-- sistema de reseñas y calificaciones, 
+- ✅ sistema de reseñas y calificaciones, 
 - notificaciones por email para nuevos pedidos, y 
 - un sistema de caché con Redis para las consultas más frecuentes.
 
@@ -26,12 +26,6 @@ JWT_SECRET=tu_secret_key_super_segura_cambiar_en_produccion" > .env
 
 # Inicializar base de datos
 node init-db.js
-
-# Agregar campo password a la tabla usuarios (ejecutar en MySQL)
-mysql -u root -p ttops_node_db < add-password-field.sql
-
-# Agregar campo imagen a la tabla productos (ejecutar en MySQL)
-mysql -u root -p ttops_node_db < add-imagen-field.sql
 
 # Ejecutar API
 node app.js
@@ -79,6 +73,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 **Públicos (sin autenticación):**
 - `POST /auth/login` - Iniciar sesión
+- `GET /reseñas` - Listar reseñas y calificaciones
 
 **Protegidos (requieren token):**
 - `GET /auth/me` - Obtener perfil del usuario autenticado
@@ -90,114 +85,9 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 - `DELETE /usuarios/:id` - Eliminar usuario
 - `GET /productos` - Listar productos
 - `POST /productos` - Crear producto
+- `POST /reseñas` - Crear reseña y calificación
 - `GET /estadisticas` - Obtener estadísticas
 
-### 4. Ejemplo de Uso con cURL
-
-```bash
-# 1. Login
-curl -X POST http://localhost:3000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"maria@example.com","password":"tu_contraseña"}'
-
-# 2. Usar el token recibido
-curl -X GET http://localhost:3000/auth/me \
-  -H "Authorization: Bearer TU_TOKEN_AQUI"
-
-# 3. Listar usuarios
-curl -X GET http://localhost:3000/usuarios \
-  -H "Authorization: Bearer TU_TOKEN_AQUI"
-```
-
-### 5. Crear Usuario con Contraseña
-
-```bash
-POST /usuarios
-Authorization: Bearer TU_TOKEN
-Content-Type: application/json
-
-{
-  "nombre": "Nuevo Usuario",
-  "email": "nuevo@example.com",
-  "edad": 25,
-  "password": "contraseña123"
-}
-```
-
-**Nota:** La contraseña se hashea automáticamente con bcrypt antes de guardarse en la base de datos.
-
-## 📸 Subida de Imágenes para Productos
-
-La API ahora permite subir imágenes al crear productos usando `multipart/form-data`.
-
-### 1. Crear Producto con Imagen
-
-```bash
-POST /productos
-Content-Type: multipart/form-data
-
-{
-  "nombre": "Laptop Gaming",
-  "precio": 1299.99,
-  "descripcion": "Laptop potente para gaming",
-  "stock": 5,
-  "categoria_id": 1,
-  "imagen": [archivo de imagen]
-}
-```
-
-**Características:**
-- Formatos aceptados: JPEG, JPG, PNG, GIF, WEBP
-- Tamaño máximo: 5MB
-- Las imágenes se guardan en el directorio `uploads/`
-- Se genera un nombre único para cada archivo
-- La URL de la imagen se incluye en la respuesta
-
-**Respuesta exitosa:**
-```json
-{
-  "mensaje": "Producto creado exitosamente",
-  "producto": {
-    "id": 1,
-    "nombre": "Laptop Gaming",
-    "precio": 1299.99,
-    "stock": 5,
-    "categoria_id": 1,
-    "imagen": "http://localhost:3000/uploads/laptop-1234567890-987654321.jpg"
-  }
-}
-```
-
-### 2. Ejemplo con cURL
-
-```bash
-curl -X POST http://localhost:3000/productos \
-  -F "nombre=Laptop Gaming" \
-  -F "precio=1299.99" \
-  -F "descripcion=Laptop potente para gaming" \
-  -F "stock=5" \
-  -F "categoria_id=1" \
-  -F "imagen=@/ruta/a/imagen.jpg"
-```
-
-### 3. Ejemplo con JavaScript (FormData)
-
-```javascript
-const formData = new FormData();
-formData.append('nombre', 'Laptop Gaming');
-formData.append('precio', '1299.99');
-formData.append('descripcion', 'Laptop potente para gaming');
-formData.append('stock', '5');
-formData.append('categoria_id', '1');
-formData.append('imagen', fileInput.files[0]); // fileInput es un input type="file"
-
-fetch('http://localhost:3000/productos', {
-  method: 'POST',
-  body: formData
-})
-.then(response => response.json())
-.then(data => console.log(data));
-```
 
 ### 4. Acceso a Imágenes
 
@@ -226,3 +116,118 @@ Al listar productos con `GET /productos`, cada producto incluirá su URL de imag
 ```
 
 **Nota:** La imagen es opcional. Si no se proporciona una imagen, el campo `imagen` será `null`.
+
+## ⭐ Sistema de Reseñas y Calificaciones
+
+La API ahora incluye un sistema completo de reseñas y calificaciones para productos.
+
+
+### 1. Crear Reseña y Calificación (POST - Protegido)
+
+**Endpoint:** `POST /reseñas`  
+**Autenticación:** Requerida (Bearer Token)
+
+```bash
+POST /reseñas
+Authorization: Bearer TU_TOKEN
+Content-Type: application/json
+
+{
+  "producto_id": 1,
+  "calificacion": 5,
+  "comentario": "Excelente producto, muy recomendado"
+}
+```
+
+**Parámetros:**
+- `producto_id` (requerido): ID del producto a calificar
+- `calificacion` (requerido): Número entre 1 y 5
+- `comentario` (opcional): Texto de la reseña (máximo 1000 caracteres)
+
+**Respuesta exitosa:**
+```json
+{
+  "mensaje": "Reseña creada exitosamente",
+  "resena": {
+    "id": 1,
+    "producto_id": 1,
+    "usuario_id": 1,
+    "calificacion": 5,
+    "comentario": "Excelente producto, muy recomendado",
+    "fecha_creacion": "2024-01-15T10:30:00.000Z",
+    "usuario_nombre": "María González",
+    "usuario_email": "maria@example.com",
+    "producto_nombre": "Laptop Gaming"
+  }
+}
+```
+
+**Características:**
+- Solo puedes calificar un producto una vez por usuario
+- El usuario_id se obtiene automáticamente del token JWT
+- Se valida que el producto exista y esté activo
+- La calificación debe estar entre 1 y 5 estrellas
+
+### 2. Listar Reseñas (GET - Público)
+
+**Endpoint:** `GET /reseñas`  
+**Autenticación:** No requerida
+
+**Parámetros de consulta (query parameters):**
+- `producto_id` (opcional): Filtrar reseñas por producto
+- `usuario_id` (opcional): Filtrar reseñas por usuario
+- `pagina` (opcional): Número de página (default: 1)
+- `limite` (opcional): Resultados por página (default: 10)
+- `orden` (opcional): Ordenamiento - `fecha_creacion`, `calificacion`, `id` (default: `fecha_creacion`)
+
+**Ejemplos:**
+
+```bash
+# Listar todas las reseñas
+GET /reseñas
+
+# Listar reseñas de un producto específico
+GET /reseñas?producto_id=1
+
+# Listar reseñas con paginación
+GET /reseñas?pagina=1&limite=5
+
+# Listar reseñas ordenadas por calificación
+GET /reseñas?orden=calificacion
+```
+
+**Respuesta exitosa:**
+```json
+{
+  "resenas": [
+    {
+      "id": 1,
+      "producto_id": 1,
+      "usuario_id": 1,
+      "calificacion": 5,
+      "comentario": "Excelente producto, muy recomendado",
+      "fecha_creacion": "2024-01-15T10:30:00.000Z",
+      "usuario_nombre": "María González",
+      "usuario_email": "maria@example.com",
+      "producto_nombre": "Laptop Gaming",
+      "producto_precio": 1299.99
+    }
+  ],
+  "estadisticas": {
+    "total_resenas": 15,
+    "calificacion_promedio": "4.33",
+    "distribucion": {
+      "cinco_estrellas": 8,
+      "cuatro_estrellas": 4,
+      "tres_estrellas": 2,
+      "dos_estrellas": 1,
+      "una_estrella": 0
+    }
+  },
+  "pagina": 1,
+  "limite": 10,
+  "total": 15
+}
+```
+
+**Nota:** Las estadísticas solo se incluyen cuando se filtra por `producto_id`.

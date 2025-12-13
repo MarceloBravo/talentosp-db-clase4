@@ -57,4 +57,36 @@ function validarUsuario(datos) {
     return errores;
   }
   
-  module.exports = { validarUsuario, validarProducto };
+  function validarResena(datos) {
+    const errores = [];
+  
+    if (datos.producto_id === undefined || datos.producto_id === null) {
+      errores.push('producto_id es requerido');
+    } else {
+      const productoId = parseInt(datos.producto_id);
+      if (isNaN(productoId) || productoId <= 0) {
+        errores.push('producto_id debe ser un número entero positivo');
+      }
+    }
+  
+    if (datos.calificacion === undefined || datos.calificacion === null) {
+      errores.push('calificacion es requerida');
+    } else {
+      const calificacion = parseInt(datos.calificacion);
+      if (isNaN(calificacion) || calificacion < 1 || calificacion > 5) {
+        errores.push('calificacion debe ser un número entre 1 y 5');
+      }
+    }
+  
+    if (datos.comentario !== undefined && datos.comentario !== null) {
+      if (typeof datos.comentario !== 'string') {
+        errores.push('comentario debe ser texto');
+      } else if (datos.comentario.length > 1000) {
+        errores.push('comentario no puede exceder 1000 caracteres');
+      }
+    }
+  
+    return errores;
+  }
+  
+  module.exports = { validarUsuario, validarProducto, validarResena };
