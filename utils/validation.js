@@ -89,4 +89,37 @@ function validarUsuario(datos) {
     return errores;
   }
   
-  module.exports = { validarUsuario, validarProducto, validarResena };
+  function validarPedido(datos) {
+    const errores = [];
+  
+    if (!datos.items || !Array.isArray(datos.items)) {
+      errores.push('items es requerido y debe ser un array');
+    } else if (datos.items.length === 0) {
+      errores.push('El pedido debe contener al menos un producto');
+    } else {
+      // Validar cada item del pedido
+      datos.items.forEach((item, index) => {
+        if (!item.producto_id) {
+          errores.push(`items[${index}].producto_id es requerido`);
+        } else {
+          const productoId = parseInt(item.producto_id);
+          if (isNaN(productoId) || productoId <= 0) {
+            errores.push(`items[${index}].producto_id debe ser un número entero positivo`);
+          }
+        }
+  
+        if (item.cantidad === undefined || item.cantidad === null) {
+          errores.push(`items[${index}].cantidad es requerida`);
+        } else {
+          const cantidad = parseInt(item.cantidad);
+          if (isNaN(cantidad) || cantidad <= 0) {
+            errores.push(`items[${index}].cantidad debe ser un número entero positivo`);
+          }
+        }
+      });
+    }
+  
+    return errores;
+  }
+  
+  module.exports = { validarUsuario, validarProducto, validarResena, validarPedido };

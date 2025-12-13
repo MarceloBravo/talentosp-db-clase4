@@ -5,7 +5,8 @@ const bcrypt = require('bcrypt');
 const path = require('path');
 const multer = require('multer');
 const db = require('./utils/database');
-const { validarUsuario, validarProducto, validarResena } = require('./utils/validation');
+const { validarUsuario, validarProducto, validarResena, validarPedido } = require('./utils/validation');
+const { enviarEmailPedido } = require('./utils/email');
 const { authenticateToken } = require('./middlewares/auth');
 const upload = require('./config/upload');
 
@@ -791,6 +792,259 @@ app.get('/reseñas', async (req, res) => {
 
   } catch (error) {
     console.error('Error obteniendo reseñas:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// RUTAS DE PEDIDOS
+
+// POST /pedidos - Crear pedido (protegida)
+app.post('/pedidos', authenticateToken, async (req, res) => {
+  try {
+    const errores = validarPedido(req.body);
+    if (errores.length > 0) {
+      return res.status(400).json({
+        error: 'Datos inválidos',
+        detalles: errores
+      });
+    }
+
+    const { items } = req.body;
+    const usuario_id = req.user.id;
+
+    // Obtener información del usuario
+    const usuarios = await db.query(
+      'SELECT id, nombre, email FROM usuarios WHERE id = ?',
+      [usuario_id]
+    );
+
+    if (usuarios.length === 0) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    const usuario = usuarios[0];
+
+    // Crear pedido usando transacción para garantizar consistencia
+    const resultado = await db.transaction(async (connection) => {
+      let totalPedido = 0;
+      const detallesPedido = [];
+
+      // Validar y obtener información de cada producto
+      for (const item of items) {
+        const productoId = parseInt(item.producto_id);
+        const cantidad = parseInt(item.cantidad);
+
+        // Obtener información del producto
+        const [productos] = await connection.execute(
+          'SELECT id, nombre, precio, stock FROM productos WHERE id = ? AND activo = true',
+          [productoId]
+        );
+
+        if (productos.length === 0) {
+          throw new Error(`Producto con ID ${productoId} no encontrado o inactivo`);
+        }
+
+        const producto = productos[0];
+
+        // Verificar stock disponible
+        if (producto.stock < cantidad) {
+          throw new Error(`Stock insuficiente para el producto "${producto.nombre}". Stock disponible: ${producto.stock}, solicitado: ${cantidad}`);
+        }
+
+        // Calcular subtotal
+        const subtotal = parseFloat(producto.precio) * cantidad;
+        totalPedido += subtotal;
+
+        // Guardar información para los detalles
+        detallesPedido.push({
+          producto_id: productoId,
+          producto_nombre: producto.nombre,
+          cantidad: cantidad,
+          precio_unitario: parseFloat(producto.precio),
+          subtotal: subtotal
+        });
+      }
+
+      // Crear el pedido
+      const [resultadoPedido] = await connection.execute(
+        'INSERT INTO pedidos (usuario_id, total, estado, fecha_pedido) VALUES (?, ?, ?, NOW())',
+        [usuario_id, totalPedido, 'pendiente']
+      );
+
+      const pedidoId = resultadoPedido.insertId;
+
+      // Crear los detalles del pedido y actualizar stock
+      for (const detalle of detallesPedido) {
+        // Insertar detalle del pedido
+        await connection.execute(
+          'INSERT INTO detalle_pedidos (pedido_id, producto_id, cantidad, precio_unitario) VALUES (?, ?, ?, ?)',
+          [pedidoId, detalle.producto_id, detalle.cantidad, detalle.precio_unitario]
+        );
+
+        // Actualizar stock del producto
+        await connection.execute(
+          'UPDATE productos SET stock = stock - ? WHERE id = ?',
+          [detalle.cantidad, detalle.producto_id]
+        );
+      }
+
+      // Obtener el pedido completo con detalles
+      const [pedidos] = await connection.execute(
+        `SELECT p.id, p.usuario_id, p.fecha_pedido, p.total, p.estado
+         FROM pedidos p
+         WHERE p.id = ?`,
+        [pedidoId]
+      );
+
+      return {
+        pedido: pedidos[0],
+        detalles: detallesPedido
+      };
+    });
+
+    // Enviar email de confirmación (no bloquea la respuesta si falla)
+    enviarEmailPedido(usuario, resultado.pedido, resultado.detalles)
+      .then(emailResult => {
+        if (emailResult.success) {
+          console.log('✅ Email de confirmación enviado al usuario:', usuario.email);
+        } else {
+          console.warn('⚠️  No se pudo enviar el email, pero el pedido fue creado:', emailResult.error);
+        }
+      })
+      .catch(error => {
+        console.error('❌ Error al enviar email (pedido ya creado):', error);
+      });
+
+    // Obtener información completa del pedido para la respuesta
+    const pedidos = await db.query(
+      `SELECT p.id, p.usuario_id, p.fecha_pedido, p.total, p.estado,
+              u.nombre AS usuario_nombre, u.email AS usuario_email
+       FROM pedidos p
+       INNER JOIN usuarios u ON p.usuario_id = u.id
+       WHERE p.id = ?`,
+      [resultado.pedido.id]
+    );
+
+    const detallesCompletos = await db.query(
+      `SELECT dp.id, dp.producto_id, dp.cantidad, dp.precio_unitario,
+              p.nombre AS producto_nombre
+       FROM detalle_pedidos dp
+       INNER JOIN productos p ON dp.producto_id = p.id
+       WHERE dp.pedido_id = ?`,
+      [resultado.pedido.id]
+    );
+
+    res.status(201).json({
+      mensaje: 'Pedido creado exitosamente',
+      pedido: {
+        ...pedidos[0],
+        items: detallesCompletos
+      }
+    });
+
+  } catch (error) {
+    console.error('Error creando pedido:', error);
+    
+    // Errores específicos
+    if (error.message.includes('no encontrado') || error.message.includes('Stock insuficiente')) {
+      return res.status(400).json({
+        error: 'Error en el pedido',
+        mensaje: error.message
+      });
+    }
+
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// GET /pedidos - Listar pedidos del usuario autenticado (protegida)
+app.get('/pedidos', authenticateToken, async (req, res) => {
+  try {
+    const usuario_id = req.user.id;
+    const { pagina = 1, limite = 10, estado } = req.query;
+
+    let sql = `
+      SELECT p.id, p.fecha_pedido, p.total, p.estado,
+             COUNT(dp.id) AS total_items
+      FROM pedidos p
+      LEFT JOIN detalle_pedidos dp ON p.id = dp.pedido_id
+      WHERE p.usuario_id = ?
+    `;
+    const params = [usuario_id];
+
+    if (estado) {
+      sql += ' AND p.estado = ?';
+      params.push(estado);
+    }
+
+    sql += ' GROUP BY p.id ORDER BY p.fecha_pedido DESC';
+
+    // Aplicar paginación
+    const limiteInt = Math.max(1, parseInt(limite) || 10);
+    const offsetInt = Math.max(0, ((parseInt(pagina) || 1) - 1) * limiteInt);
+    sql += ` LIMIT ${limiteInt} OFFSET ${offsetInt}`;
+
+    const pedidos = await db.query(sql, params);
+
+    res.json({
+      pedidos,
+      pagina: parseInt(pagina),
+      limite: parseInt(limite)
+    });
+
+  } catch (error) {
+    console.error('Error obteniendo pedidos:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// GET /pedidos/:id - Obtener pedido específico (protegida)
+app.get('/pedidos/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const usuario_id = req.user.id;
+
+    // Obtener información del pedido
+    const pedidos = await db.query(
+      `SELECT p.id, p.usuario_id, p.fecha_pedido, p.total, p.estado,
+              u.nombre AS usuario_nombre, u.email AS usuario_email
+       FROM pedidos p
+       INNER JOIN usuarios u ON p.usuario_id = u.id
+       WHERE p.id = ? AND p.usuario_id = ?`,
+      [id, usuario_id]
+    );
+
+    if (pedidos.length === 0) {
+      return res.status(404).json({ error: 'Pedido no encontrado' });
+    }
+
+    // Obtener detalles del pedido
+    const detalles = await db.query(
+      `SELECT dp.id, dp.producto_id, dp.cantidad, dp.precio_unitario,
+              p.nombre AS producto_nombre, p.imagen
+       FROM detalle_pedidos dp
+       INNER JOIN productos p ON dp.producto_id = p.id
+       WHERE dp.pedido_id = ?`,
+      [id]
+    );
+
+    // Construir URLs completas para las imágenes
+    const detallesConImagen = detalles.map(detalle => {
+      if (detalle.imagen) {
+        detalle.imagen = `${req.protocol}://${req.get('host')}/${detalle.imagen}`;
+      }
+      return detalle;
+    });
+
+    res.json({
+      pedido: {
+        ...pedidos[0],
+        items: detallesConImagen
+      }
+    });
+
+  } catch (error) {
+    console.error('Error obteniendo pedido:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
